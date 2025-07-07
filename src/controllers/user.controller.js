@@ -3,27 +3,31 @@ import { apiError } from "../utils/apiError.js";
 import { User } from "../models/user.model.js"
 import { uploadOnCloudinary } from "../utils/cloudinary.js"
 import { apiResponse } from "../utils/apiResponse.js";
+import jwt from "jsonwebtoken";
 
-const generateAccessAndRefreshToken =  async (userId) => {
+const generateAccessAndRefreshToken = async (userId) => {
     try {
-        // generate tokens
-        const user = await User.findOne(userId)
-        const refreshToken  = user.generateRefreshToken()
-        const accessToken = user.generateAccessToken()
+        const user = await User.findById(userId);
 
-        //refresh token to db
-        user.refreshToken = refreshToken
-        await user.save({validateBeforeSave: false})
+        if (!user) {
+            console.error("User not found for ID:", userId);
+            throw new apiError(404, "User not found while generating tokens");
+        }
 
-        // having both tokens, ready to send via cookies
-        return {accessToken, refreshToken}
+        const refreshToken = user.generateRefreshToken();
+        const accessToken = user.generateAccessToken();
 
+        user.refreshToken = refreshToken;
+        await user.save({ validateBeforeSave: false });
 
+        return { accessToken, refreshToken };
 
     } catch (error) {
-        throw new apiError(500, "Something went wrong while generating refresh and access token")
+        console.error("Token generation error:", error); // <-- log real error
+        throw new apiError(500, "Something went wrong while generating refresh and access token");
     }
-}
+};
+
 
 
 const registerUser = asyncHandler( async (req, res) => {
@@ -129,7 +133,7 @@ const loginUser = asyncHandler( async (req, res) => {
     //but we want ki either email or username, both works, if anyone of them is there in the database, then the user exists
     // therefore syntax for that
     const user = await User.findOne({
-        $or: [{email, username}]
+        $or: [{email}, {username}]
     })
 
     if(!user) {
@@ -143,10 +147,12 @@ const loginUser = asyncHandler( async (req, res) => {
     }
 
     //Cookie generation:
+    console.log("User._id at login:", user._id);
+
     const {accessToken, refreshToken} = await generateAccessAndRefreshToken(user._id)
     // this func did most of the thing, (refer .txt or its definition at the top)
 
-    const loggedInUser = User.findById(user._id).select("-password refreshToken") // this is the instance we wil send to the user, with this will attach cookies
+    const loggedInUser =  await User.findById(user._id).select("-password -refreshToken"); // this is the instance we wil send to the user, with this will attach cookies
 
     const options = {
         httpOnly: "true",
@@ -154,6 +160,7 @@ const loginUser = asyncHandler( async (req, res) => {
     }
     
     // here we r sending tokens via cookies, but still sending a json response of loggedInUser, access and refresh tokens, this is for the case when the user wants to delibrately save his cookies in his local machine, its a good practice
+    return res
     .status(200)
     .cookie("accessToken", accessToken, options)
     .cookie("refreshToken", refreshToken, options)
@@ -193,6 +200,55 @@ const logoutUser = asyncHandler(async(req, res) => {
 
 })
 
+const refreshAccessToken = asyncHandler(async (req, res) => {
+    const incomingRefreshToken = req.cookies.refreshToken || req.body.refreshToken // OR part is for mobile dev, when the cookies are sent explicitly
+    
+    if(!incomingRefreshToken) {
+        throw new apiError(401, "Unauthorized request")
+    }
+    
+    try {
+        const decodedToken = jwt.verify(
+            incomingRefreshToken, 
+            process.env.REFRESH_TOKEN_SECRET
+        )
+        
+        const user = await User.findById(decodedToken?._id)
+        
+        if(!user) {
+            throw new apiError(401, "Invalid refresh token")
+        }
+    
+        if(incomingRefreshToken !== user?.refreshToken) {
+            throw new apiError(401, "Refresh token is expired or used")
+        }
+    
+        const options = {
+            httpOnly: true,
+            secure: true
+        }
+    
+        const {accessToken, newRefreshToken} = await generateAccessAndRefreshToken(user._id)
+        
+        return res
+        .status(200)
+        .cookie("accessToken", accessToken, options)
+        .cookie("refreshToken", newRefreshToken, options)
+        .json(
+            new apiResponse(200, {accessToken, refreshToken: newRefreshToken},
+                "Access token refreshed"
+            )
+        )
+    } catch (error) {
+        throw new apiError(401, error?.message || "Invalid refresh token")
+    }
+
+
+
+
+
+})
+
 
 
 
@@ -201,3 +257,4 @@ const logoutUser = asyncHandler(async(req, res) => {
 export {registerUser}
 export {loginUser}
 export {logoutUser}
+export {refreshAccessToken}

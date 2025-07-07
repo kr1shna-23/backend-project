@@ -72,6 +72,8 @@ userSchema.methods.isPasswordCorrect = async function (password) {
 
 //custom method to generate access token
 userSchema.methods.generateAccessToken = function() {
+    console.log("Access token expiry:", process.env.ACCESS_TOKEN_EXPIRY);
+
     return jwt.sign(
     {
         _id: this._id,
