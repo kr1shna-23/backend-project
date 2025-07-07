@@ -4,6 +4,27 @@ import { User } from "../models/user.model.js"
 import { uploadOnCloudinary } from "../utils/cloudinary.js"
 import { apiResponse } from "../utils/apiResponse.js";
 
+const generateAccessAndRefreshToken =  async (userId) => {
+    try {
+        // generate tokens
+        const user = await User.findOne(userId)
+        const refreshToken  = user.generateRefreshToken()
+        const accessToken = user.generateAccessToken()
+
+        //refresh token to db
+        user.refreshToken = refreshToken
+        await user.save({validateBeforeSave: false})
+
+        // having both tokens, ready to send via cookies
+        return {accessToken, refreshToken}
+
+
+
+    } catch (error) {
+        throw new apiError(500, "Something went wrong while generating refresh and access token")
+    }
+}
+
 
 const registerUser = asyncHandler( async (req, res) => {
     //get user data from frontend
@@ -88,4 +109,95 @@ const registerUser = asyncHandler( async (req, res) => {
 
 })
 
+
+const loginUser = asyncHandler( async (req, res) => {
+    // req.body -> data
+    // username or email based login
+    //find the user
+    //if not there, redirect to register
+    // if there, check password
+    //if match generate access and refresh token for user 
+    // send these tokens secured cookies and send response for successful login
+
+    const {email, username, password} = req.body
+    // here we can login via any email or username
+    if(!username && !email) {
+        throw new apiError(400, "Username or Email is required")
+    }
+
+    // User.findOne({email}) // we use this simple syntax if we were to make login simply via one of the params
+    //but we want ki either email or username, both works, if anyone of them is there in the database, then the user exists
+    // therefore syntax for that
+    const user = await User.findOne({
+        $or: [{email, username}]
+    })
+
+    if(!user) {
+        throw new apiError(404, "User doesnt exist")
+    }
+    
+    const isPasswordValid = await user.isPasswordCorrect(password)
+    
+    if(!isPasswordValid) {
+        throw new apiError(401, "Invalid user credentials")
+    }
+
+    //Cookie generation:
+    const {accessToken, refreshToken} = await generateAccessAndRefreshToken(user._id)
+    // this func did most of the thing, (refer .txt or its definition at the top)
+
+    const loggedInUser = User.findById(user._id).select("-password refreshToken") // this is the instance we wil send to the user, with this will attach cookies
+
+    const options = {
+        httpOnly: "true",
+        secure: "true"
+    }
+    
+    // here we r sending tokens via cookies, but still sending a json response of loggedInUser, access and refresh tokens, this is for the case when the user wants to delibrately save his cookies in his local machine, its a good practice
+    .status(200)
+    .cookie("accessToken", accessToken, options)
+    .cookie("refreshToken", refreshToken, options)
+    .json(
+        new apiResponse(200, {
+            user: loggedInUser, accessToken, refreshToken,
+            
+        },
+        "User logged in successfully!"
+    )
+)
+
+})
+
+const logoutUser = asyncHandler(async(req, res) => {
+    await User.findByIdAndUpdate(
+        req.user._id, {
+            $set: {
+                refreshToken: undefined
+            }
+        },
+        {
+            new: true
+        }
+    )
+    const options = {
+        httpOnly: "true",
+        secure: "true"
+    }
+
+    return res
+    .status(200)
+    .clearCookie("accessToken", options)
+    .clearCookie("refreshToken", options)
+    .json(new apiResponse(200, {}, "User Logged Out !"))
+
+
+})
+
+
+
+
+
+
 export {registerUser}
+export {loginUser}
+export {logoutUser}
